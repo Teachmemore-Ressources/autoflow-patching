@@ -1,0 +1,21 @@
+---
+- name: Initialize isolated lab package and repository
+  hosts: linux_lab
+  gather_facts: false
+  strategy: linear
+  tasks:
+    - name: Wait for container SSH readiness
+      ansible.builtin.wait_for_connection:
+        timeout: 180
+    - name: Install lab-agent 1.0 from prebuilt package
+      ansible.builtin.command: dpkg -i /tmp/lab-agent_1.0_all.deb
+      args:
+        creates: /usr/local/bin/lab-agent
+    - name: Configure local-only apt repository
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/lab-agent.list
+        content: 'deb [trusted=yes] http://aptrepo:8000/ ./\n'
+        mode: '0644'
+    - name: Check initial application health
+      ansible.builtin.command: /usr/local/bin/lab-health
+      changed_when: false
