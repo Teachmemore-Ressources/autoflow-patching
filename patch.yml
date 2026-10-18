@@ -1,40 +1,92 @@
 ---
-- name: Patch simulated Linux nodes in batches of 10
+- name: Patch Linux lab-agent in batches of 10
   hosts: linux_lab
   gather_facts: false
   serial: 10
   max_fail_percentage: 0
   any_errors_fatal: true
+
   vars:
-    # Only lab-agent package, not kernel or host OS, is upgraded.
     lab_package: lab-agent
+
   tasks:
-    - name: Confirm pre-patch application health
-      ansible.builtin.command: /usr/local/bin/lab-health
+    - name: Check application health before patch
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/lab-health
+      register: pre_health
       changed_when: false
-    - name: Update repository index (restricted to isolated apt list)
-      ansible.builtin.command: apt-get update -o Dir::Etc::sourcelist="sources.list.d/lab-agent.list" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0"
+
+    - name: Capture package version before patch
+      ansible.builtin.command:
+        argv:
+          - dpkg-query
+          - -W
+          - "-f=${Version}"
+          - "{{ lab_package }}"
+      register: version_before
       changed_when: false
-    - name: Upgrade only the lab-agent application
-      ansible.builtin.command: apt-get install -y --only-upgrade lab-agent
+
+    - name: Refresh isolated laboratory APT repository
+      ansible.builtin.command:
+        argv:
+          - apt-get
+          - update
+          - "-o"
+          - "Dir::Etc::sourcelist=sources.list.d/lab-agent.list"
+          - "-o"
+          - "Dir::Etc::sourceparts=-"
+          - "-o"
+          - "APT::Get::List-Cleanup=0"
+      changed_when: false
+
+    - name: Upgrade only lab-agent
+      ansible.builtin.command:
+        argv:
+          - apt-get
+          - install
+          - "-y"
+          - "--only-upgrade"
+          - "{{ lab_package }}"
       register: patch_result
       changed_when: "'Setting up lab-agent' in patch_result.stdout"
-    - name: Capture installed agent version
-      ansible.builtin.command: dpkg-query -W -f='${Version}' lab-agent
-      register: agent_version
+
+    - name: Capture package version after patch
+      ansible.builtin.command:
+        argv:
+          - dpkg-query
+          - -W
+          - "-f=${Version}"
+          - "{{ lab_package }}"
+      register: version_after
       changed_when: false
-    - name: Check service/application health after patch
-      ansible.builtin.command: /usr/local/bin/lab-health
-      register: health
+
+    - name: Check application health after patch
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/lab-health
+      register: post_health
       changed_when: false
       failed_when: false
-    - name: Write per-host patch evidence (controller output)
-      ansible.builtin.copy:
-        dest: "/work/output/{{ inventory_hostname }}.json"
-        content: "{{ {'host': inventory_hostname, 'package': lab_package, 'version': agent_version.stdout, 'health_rc': health.rc, 'status': ('ok' if health.rc == 0 else 'failed'), 'simulation': true} | to_nice_json }}\n"
-        mode: '0644'
-      delegate_to: localhost
-    - name: Stop remaining batches on failing application health
+
+    - name: Publish patch evidence in AutoFlow job output
+      ansible.builtin.debug:
+        msg:
+          host: "{{ inventory_hostname }}"
+          package: "{{ lab_package }}"
+          version_before: "{{ version_before.stdout }}"
+          version_after: "{{ version_after.stdout }}"
+          version_changed: "{{ version_before.stdout != version_after.stdout }}"
+          pre_health_rc: "{{ pre_health.rc }}"
+          post_health_rc: "{{ post_health.rc }}"
+          status: "{{ 'ok' if post_health.rc == 0 else 'failed' }}"
+          simulation: true
+
+    - name: Stop campaign if application health fails
       ansible.builtin.fail:
-        msg: "Post-patch application health failed for {{ inventory_hostname }} (rc={{ health.rc }}). Campaign halted."
-      when: health.rc != 0
+        msg: >-
+          Post-patch application health failed for
+          {{ inventory_hostname }}
+          (rc={{ post_health.rc }}).
+          Campaign halted.
+      when: post_health.rc != 0
