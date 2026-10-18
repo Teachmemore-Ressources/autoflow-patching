@@ -1,0 +1,8 @@
+---
+- name: Test SSH connectivity
+  hosts: linux_lab
+  gather_facts: false
+
+  tasks:
+    - name: Verify Ansible connection
+      ansible.builtin.ping:
